@@ -34,6 +34,7 @@ const NUM_ELEPHANTS = 3;
 const NUM_RAINDROPS = 300;
 
 let elephants = [], raindrops = [], puddles = [];
+let quetzal;
 let lightning = { active: false, timer: 0, nextStrike: 300 };
 let t = 0;
 let audioStarted = false;
@@ -76,6 +77,7 @@ function setup() {
       random(0.8, 1.2)
     ));
   }
+  quetzal = new Quetzal(width * 0.5, height - 200);
   for (let i = 0; i < NUM_RAINDROPS; i++) raindrops.push(new Raindrop());
   for (let i = 0; i < 8; i++) {
     puddles.push({ x: random(width), y: height - 10, r: random(20, 60), ripples: [] });
@@ -180,6 +182,8 @@ function draw() {
   drawPuddles();
   for (let r of raindrops) { r.update(); r.show(); }
   for (let e of elephants)  { e.update(); e.show(); }
+  quetzal.update();
+  quetzal.show();
   drawGround();
   handleLightning();
 
@@ -424,6 +428,163 @@ class Elephant {
     }
     noStroke(); fill(80,50,30); ellipse(0,-3,8,8);
     pop();
+  }
+}
+
+// ─── Quetzal ───────────────────────────────────────────────────────────────
+class Quetzal {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.t = 0;
+    // dance path: figure-8 hop across the stage
+    this.pathT = 0;
+    this.wingFlap = 0;
+    this.tailSway = 0;
+    this.bobAmt = 0;
+    this.headBob = 0;
+    this.facing = 1; // 1 right, -1 left
+    this.prevX = x;
+  }
+
+  update() {
+    this.t++;
+    this.pathT += 0.008;
+    this.wingFlap += 0.18;
+    this.tailSway += 0.06;
+    this.headBob += 0.14;
+    this.bobAmt = sin(this.t * 0.12) * 18;
+
+    // Lemniscate (figure-8) path centred on stage
+    let cx = width * 0.5;
+    let cy = height - 200;
+    let rx = width * 0.28;
+    let ry = 70;
+    let denom = 1 + sin(this.pathT) * sin(this.pathT);
+    let nx = cx + rx * cos(this.pathT) / denom;
+    let ny = cy + ry * sin(this.pathT) * cos(this.pathT) / denom;
+    this.facing = (nx > this.x) ? 1 : -1;
+    this.x = nx;
+    this.y = ny + this.bobAmt;
+  }
+
+  show() {
+    push();
+    translate(this.x, this.y);
+    scale(this.facing, 1); // flip to face direction of travel
+
+    // ── Long tail feathers ──────────────────────────────────────────────
+    let sway = sin(this.tailSway) * 18;
+    let sway2 = sin(this.tailSway + 0.8) * 12;
+
+    // Outer iridescent tail plumes (two long streamers)
+    for (let side of [-1, 1]) {
+      stroke(0, 180 + side * 30, 80, 200);
+      strokeWeight(2.5);
+      noFill();
+      let baseX = side * 6, baseY = 22;
+      beginShape();
+      vertex(baseX, baseY);
+      bezierVertex(
+        baseX + side * (sway * 0.4),  baseY + 50,
+        baseX + side * (sway * 0.8 + 10), baseY + 100,
+        baseX + side * (sway + 15),        baseY + 160
+      );
+      endShape();
+      // feather tip curl
+      stroke(0, 220, 100, 160);
+      strokeWeight(1.5);
+      beginShape();
+      vertex(baseX + side * (sway + 15), baseY + 160);
+      bezierVertex(
+        baseX + side * (sway + 20), baseY + 175,
+        baseX + side * (sway + 5),  baseY + 185,
+        baseX + side * (sway - 10), baseY + 180
+      );
+      endShape();
+    }
+    // Short undertail coverts
+    noStroke();
+    fill(0, 140, 60, 180);
+    beginShape();
+    vertex(0, 20);
+    bezierVertex(-8, 50 + sway2*0.3, 8, 60 + sway2*0.3, 0, 70);
+    endShape(CLOSE);
+
+    // ── Wings ──────────────────────────────────────────────────────────
+    let wf = sin(this.wingFlap) * 20; // degrees equivalent in radians: use raw
+    for (let side of [-1, 1]) {
+      push();
+      translate(side * 2, 0);
+      rotate(side * (0.15 + sin(this.wingFlap) * 0.35));
+      // primary wing shape
+      noStroke();
+      fill(0, 160 + side * 20, 70, 230);
+      beginShape();
+      vertex(0, -5);
+      bezierVertex(side * 30, -15, side * 50, 5,  side * 45, 20);
+      bezierVertex(side * 40, 30,  side * 15, 25, 0, 15);
+      endShape(CLOSE);
+      // wing highlight (iridescence)
+      fill(60, 220, 140, 100);
+      beginShape();
+      vertex(0, -3);
+      bezierVertex(side * 20, -10, side * 35, 2, side * 30, 12);
+      bezierVertex(side * 20, 18,  side * 8,  14, 0, 8);
+      endShape(CLOSE);
+      pop();
+    }
+
+    // ── Body ───────────────────────────────────────────────────────────
+    noStroke();
+    // red belly
+    fill(210, 30, 30);
+    ellipse(0, 10, 28, 36);
+    // green back/breast overlay
+    fill(0, 175, 80);
+    ellipse(0, 4, 26, 28);
+    // iridescent sheen
+    fill(80, 255, 160, 80);
+    ellipse(-4, 0, 14, 18);
+
+    // ── Head ───────────────────────────────────────────────────────────
+    let hb = sin(this.headBob) * 5;
+    push();
+    translate(0, -18 + hb);
+    // crest (rounded helmet crest)
+    fill(0, 155, 65);
+    beginShape();
+    vertex(0, -16);
+    bezierVertex(10, -24, 16, -10, 14, 0);
+    bezierVertex(8, 4, -8, 4, -14, 0);
+    bezierVertex(-16, -10, -10, -24, 0, -16);
+    endShape(CLOSE);
+    // crest tip tuft
+    fill(0, 210, 100);
+    ellipse(0, -20, 10, 14);
+
+    // head ball
+    fill(0, 155, 65);
+    ellipse(0, 0, 26, 24);
+    // iridescent forehead
+    fill(60, 230, 140, 120);
+    ellipse(-2, -5, 12, 10);
+
+    // eye ring
+    fill(255, 230, 0);
+    ellipse(9, -2, 9, 9);
+    // eye
+    fill(10);
+    ellipse(10, -2, 6, 6);
+    fill(255, 255, 255, 200);
+    ellipse(11, -3, 2.5, 2.5);
+
+    // beak
+    fill(220, 190, 50);
+    triangle(14, -1, 22, 1, 14, 3);
+    pop();
+
+    pop(); // end flip/translate
   }
 }
 
