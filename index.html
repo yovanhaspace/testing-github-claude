@@ -4,24 +4,71 @@
   <meta charset="UTF-8">
   <title>Elephants in the Rain</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.sound.min.js"></script>
   <style>
     body { margin: 0; overflow: hidden; background: #1a1a2e; }
     canvas { display: block; }
+    #start-btn {
+      position: fixed; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(30, 60, 100, 0.92);
+      color: #aad4ff;
+      border: 2px solid #aad4ff;
+      border-radius: 12px;
+      padding: 22px 48px;
+      font-size: 1.4rem;
+      font-family: Georgia, serif;
+      cursor: pointer;
+      letter-spacing: 2px;
+      z-index: 10;
+      transition: background 0.2s;
+    }
+    #start-btn:hover { background: rgba(60, 110, 180, 0.95); }
   </style>
 </head>
 <body>
+<button id="start-btn">&#127911; Start</button>
 <script>
+// ─── Global state ──────────────────────────────────────────────────────────
 const NUM_ELEPHANTS = 3;
 const NUM_RAINDROPS = 300;
 
-let elephants = [];
-let raindrops = [];
-let puddles = [];
-let lightning = { active: false, timer: 0, nextStrike: 200 };
+let elephants = [], raindrops = [], puddles = [];
+let lightning = { active: false, timer: 0, nextStrike: 300 };
 let t = 0;
+let audioStarted = false;
 
+// ─── Sound objects ─────────────────────────────────────────────────────────
+let rainNoise, rainFilter, rainEnv;
+let thunderOsc, thunderNoise, thunderFilter, thunderEnv;
+let fluteOsc, fluteVibrato, fluteEnv;
+let guitarEnv;
+let bassOsc, bassEnv;
+let chordOscs = [], chordEnv;
+let reverbRain, reverbFlute, reverbChord;
+
+// Musical material  (Bb major pentatonic)
+const FLUTE_MELODY = [
+  466.16, 523.25, 587.33, 698.46, 783.99,
+  698.46, 622.25, 523.25, 466.16, 392.00,
+  466.16, 554.37, 622.25, 698.46, 783.99,
+  698.46, 523.25, 466.16
+];
+const GUITAR_NOTES = [233.08, 293.66, 349.23, 392.00, 466.16, 349.23];
+// Bb, F, Eb chord roots
+const CHORD_ROOTS   = [116.54, 174.61, 155.56, 87.31];
+const CHORD_RATIOS  = [1, 1.25, 1.5, 2.0];  // root, M3, P5, octave
+
+let fluteNoteIdx = 0;
+let guitarNoteIdx = 0;
+let chordIdx = 0;
+let fluteTimer = 0, guitarTimer = 0, chordTimer = 0;
+let thunderScheduled = false;
+
+// ─── Setup ─────────────────────────────────────────────────────────────────
 function setup() {
   createCanvas(windowWidth, windowHeight);
+
   for (let i = 0; i < NUM_ELEPHANTS; i++) {
     elephants.push(new Elephant(
       (i + 1) * width / (NUM_ELEPHANTS + 1),
@@ -29,40 +76,174 @@ function setup() {
       random(0.8, 1.2)
     ));
   }
-  for (let i = 0; i < NUM_RAINDROPS; i++) {
-    raindrops.push(new Raindrop());
-  }
+  for (let i = 0; i < NUM_RAINDROPS; i++) raindrops.push(new Raindrop());
   for (let i = 0; i < 8; i++) {
     puddles.push({ x: random(width), y: height - 10, r: random(20, 60), ripples: [] });
   }
+
+  document.getElementById('start-btn').addEventListener('click', startAudio);
 }
 
+// ─── Audio initialisation (called after user gesture) ──────────────────────
+function startAudio() {
+  document.getElementById('start-btn').style.display = 'none';
+  userStartAudio().then(() => {
+    buildSounds();
+    audioStarted = true;
+  });
+}
+
+function buildSounds() {
+  // Reverb units
+  reverbRain   = new p5.Reverb(); reverbRain.set(3, 4);
+  reverbFlute  = new p5.Reverb(); reverbFlute.set(2.5, 3);
+  reverbChord  = new p5.Reverb(); reverbChord.set(4, 5);
+
+  // ── Rain: filtered pink noise ──────────────────────────────────────────
+  rainNoise  = new p5.Noise('pink');
+  rainFilter = new p5.LowPass();
+  rainFilter.freq(900); rainFilter.res(2);
+  rainNoise.disconnect();
+  rainNoise.connect(rainFilter);
+  rainFilter.connect(reverbRain);
+  reverbRain.connect(); // master out
+  rainEnv = new p5.Envelope();
+  rainEnv.setADSR(2.0, 0.5, 0.45, 3.0);
+  rainEnv.setRange(0.28, 0);
+  rainNoise.start();
+  rainEnv.play(rainNoise);
+
+  // ── Thunder: low rumble ────────────────────────────────────────────────
+  thunderNoise  = new p5.Noise('brown');
+  thunderFilter = new p5.LowPass();
+  thunderFilter.freq(120); thunderFilter.res(8);
+  thunderOsc = new p5.Oscillator('sine');
+  thunderOsc.freq(40); thunderOsc.amp(0);
+  thunderNoise.disconnect();
+  thunderNoise.connect(thunderFilter);
+  thunderFilter.connect();
+  thunderOsc.start(); thunderNoise.start();
+  thunderEnv = new p5.Envelope();
+  thunderEnv.setADSR(0.05, 0.4, 0.15, 1.8);
+  thunderEnv.setRange(0.7, 0);
+
+  // ── Flute: sine + vibrato ──────────────────────────────────────────────
+  fluteOsc     = new p5.Oscillator('sine');
+  fluteVibrato = new p5.Oscillator('sine');
+  fluteVibrato.freq(5.5); fluteVibrato.amp(8);
+  fluteVibrato.disconnect();
+  fluteOsc.freq(FLUTE_MELODY[0]);
+  fluteOsc.amp(0);
+  fluteOsc.disconnect();
+  fluteOsc.connect(reverbFlute);
+  reverbFlute.connect();
+  fluteOsc.start(); fluteVibrato.start();
+  fluteEnv = new p5.Envelope();
+  fluteEnv.setADSR(0.12, 0.1, 0.75, 0.3);
+  fluteEnv.setRange(0.18, 0);
+
+  // ── Guitar: sawtooth with fast decay (plucked) ──────────────────────
+  guitarEnv = new p5.Envelope();
+  guitarEnv.setADSR(0.005, 0.18, 0.0, 0.22);
+  guitarEnv.setRange(0.22, 0);
+
+  // ── MIDI bass: triangle ───────────────────────────────────────────────
+  bassOsc = new p5.Oscillator('triangle');
+  bassOsc.freq(CHORD_ROOTS[0]); bassOsc.amp(0);
+  bassOsc.start();
+  bassEnv = new p5.Envelope();
+  bassEnv.setADSR(0.01, 0.3, 0.4, 0.5);
+  bassEnv.setRange(0.32, 0);
+
+  // ── MIDI chords: detuned sines ────────────────────────────────────────
+  for (let i = 0; i < 4; i++) {
+    let o = new p5.Oscillator('sine');
+    o.amp(0); o.start();
+    o.disconnect();
+    o.connect(reverbChord);
+    chordOscs.push(o);
+  }
+  reverbChord.connect();
+  chordEnv = new p5.Envelope();
+  chordEnv.setADSR(0.08, 0.4, 0.55, 1.0);
+  chordEnv.setRange(0.11, 0);
+}
+
+// ─── Draw ──────────────────────────────────────────────────────────────────
 function draw() {
   t++;
 
-  // Sky gradient
   let skyColor = lightning.active ? color(200, 200, 255) : color(10, 10, 40);
   background(skyColor);
 
   drawClouds();
   drawPuddles();
-
-  // Rain
-  for (let r of raindrops) {
-    r.update();
-    r.show();
-  }
-
-  // Elephants
-  for (let e of elephants) {
-    e.update();
-    e.show();
-  }
-
+  for (let r of raindrops) { r.update(); r.show(); }
+  for (let e of elephants)  { e.update(); e.show(); }
   drawGround();
   handleLightning();
+
+  if (audioStarted) tickMusic();
 }
 
+// ─── Music sequencer (called every frame @ ~60fps) ─────────────────────────
+function tickMusic() {
+  // Flute: note every ~50 frames (≈ 0.8 s)
+  fluteTimer++;
+  if (fluteTimer >= 50) {
+    fluteTimer = 0;
+    let freq = FLUTE_MELODY[fluteNoteIdx % FLUTE_MELODY.length];
+    fluteNoteIdx++;
+    fluteOsc.freq(freq + fluteVibrato.amp() * 0, 0.05); // smooth glide
+    fluteOsc.freq(freq, 0.06);
+    fluteEnv.play(fluteOsc);
+  }
+
+  // Guitar: strum every ~38 frames (slightly offbeat)
+  guitarTimer++;
+  if (guitarTimer >= 38) {
+    guitarTimer = 0;
+    pluckGuitar(GUITAR_NOTES[guitarNoteIdx % GUITAR_NOTES.length]);
+    guitarNoteIdx++;
+  }
+
+  // MIDI chord + bass: change every ~180 frames (≈ 3 s)
+  chordTimer++;
+  if (chordTimer >= 180) {
+    chordTimer = 0;
+    let root = CHORD_ROOTS[chordIdx % CHORD_ROOTS.length];
+    chordIdx++;
+    // bass hit
+    bassOsc.freq(root, 0.05);
+    bassEnv.play(bassOsc);
+    // chord voicing
+    for (let i = 0; i < chordOscs.length; i++) {
+      chordOscs[i].freq(root * CHORD_RATIOS[i] + random(-0.5, 0.5), 0.08);
+      chordEnv.play(chordOscs[i]);
+    }
+  }
+}
+
+function pluckGuitar(freq) {
+  // One oscillator per pluck — create, envelope, then stop after decay
+  let o = new p5.Oscillator('sawtooth');
+  o.freq(freq); o.amp(0); o.start();
+  let e = new p5.Envelope();
+  e.setADSR(0.003, 0.15, 0.0, 0.25);
+  e.setRange(0.20, 0);
+  e.play(o);
+  // clean up after 0.6 s
+  setTimeout(() => { o.stop(); }, 600);
+}
+
+function triggerThunder() {
+  if (!audioStarted) return;
+  thunderEnv.play(thunderNoise);
+  thunderOsc.amp(0.35, 0.05);
+  thunderOsc.amp(0, 1.8, 0.4);
+}
+
+// ─── Scene helpers ─────────────────────────────────────────────────────────
 function drawClouds() {
   noStroke();
   fill(40, 40, 65, 200);
@@ -76,11 +257,9 @@ function drawClouds() {
 }
 
 function drawGround() {
-  // Wet ground
   noStroke();
   fill(20, 30, 20);
   rect(0, height - 30, width, 30);
-  // Wet sheen
   fill(30, 60, 80, 80);
   rect(0, height - 28, width, 10);
 }
@@ -90,16 +269,12 @@ function drawPuddles() {
     noStroke();
     fill(30, 60, 100, 120);
     ellipse(p.x, p.y, p.r * 2, p.r * 0.5);
-    // Ripples
     if (frameCount % 20 === 0) p.ripples.push({ r: 2, a: 180 });
     for (let i = p.ripples.length - 1; i >= 0; i--) {
       let rip = p.ripples[i];
-      noFill();
-      stroke(80, 140, 200, rip.a);
-      strokeWeight(1);
+      noFill(); stroke(80, 140, 200, rip.a); strokeWeight(1);
       ellipse(p.x, p.y, rip.r * 2, rip.r * 0.5);
-      rip.r += 0.5;
-      rip.a -= 4;
+      rip.r += 0.5; rip.a -= 4;
       if (rip.a <= 0) p.ripples.splice(i, 1);
     }
   }
@@ -111,7 +286,12 @@ function handleLightning() {
     lightning.active = true;
     lightning.timer = 5;
     lightning.nextStrike = int(random(200, 600));
-    drawLightningBolt(random(width * 0.2, width * 0.8), 0, random(width * 0.1, width * 0.9), height * 0.5);
+    drawLightningBolt(
+      random(width * 0.2, width * 0.8), 0,
+      random(width * 0.1, width * 0.9), height * 0.5
+    );
+    // thunder rumble delayed ~0.6 s after flash
+    setTimeout(triggerThunder, 600 + random(0, 400));
   }
   if (lightning.active) {
     lightning.timer--;
@@ -120,24 +300,17 @@ function handleLightning() {
 }
 
 function drawLightningBolt(x1, y1, x2, y2) {
-  stroke(220, 220, 255, 200);
-  strokeWeight(2);
-  let segments = 8;
+  stroke(220, 220, 255, 200); strokeWeight(2);
   let pts = [{ x: x1, y: y1 }];
-  for (let i = 1; i < segments; i++) {
-    let frac = i / segments;
-    pts.push({
-      x: lerp(x1, x2, frac) + random(-40, 40),
-      y: lerp(y1, y2, frac)
-    });
+  for (let i = 1; i < 8; i++) {
+    let f = i / 8;
+    pts.push({ x: lerp(x1, x2, f) + random(-40, 40), y: lerp(y1, y2, f) });
   }
   pts.push({ x: x2, y: y2 });
-  for (let i = 0; i < pts.length - 1; i++) {
-    line(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
-  }
+  for (let i = 0; i < pts.length - 1; i++) line(pts[i].x, pts[i].y, pts[i+1].x, pts[i+1].y);
 }
 
-// ---- Raindrop ----
+// ─── Raindrop ──────────────────────────────────────────────────────────────
 class Raindrop {
   constructor() { this.reset(true); }
   reset(init = false) {
@@ -148,226 +321,113 @@ class Raindrop {
     this.alpha = random(100, 200);
   }
   update() {
-    this.y += this.speed;
-    this.x += 1.5; // slight wind
+    this.y += this.speed; this.x += 1.5;
     if (this.y > height) this.reset();
   }
   show() {
-    stroke(150, 200, 255, this.alpha);
-    strokeWeight(1);
+    stroke(150, 200, 255, this.alpha); strokeWeight(1);
     line(this.x, this.y, this.x + 2, this.y + this.len);
   }
 }
 
-// ---- Elephant ----
+// ─── Elephant ──────────────────────────────────────────────────────────────
 class Elephant {
-  constructor(x, y, scale) {
-    this.x = x;
-    this.y = y;
-    this.scale = scale;
-    this.bobOffset = random(TWO_PI);
-    this.legPhase = random(TWO_PI);
-    this.trunkWave = random(TWO_PI);
-    this.earFlap = random(TWO_PI);
-    this.color = color(random(100, 140), random(100, 130), random(110, 150));
-    this.hatColor = color(random(20, 60), random(20, 60), random(20, 60));
-    this.hatBandColor = color(random(150, 255), random(50, 150), random(50, 100));
-    this.eyeX = 0;
-    this.eyeY = 0;
-    this.umbrellaAngle = sin(this.bobOffset) * 0.05;
+  constructor(x, y, sc) {
+    this.x = x; this.y = y; this.scale = sc;
+    this.bobOffset  = random(TWO_PI);
+    this.legPhase   = random(TWO_PI);
+    this.trunkWave  = random(TWO_PI);
+    this.earFlap    = random(TWO_PI);
+    this.color      = color(random(100,140), random(100,130), random(110,150));
+    this.hatColor   = color(random(20,60),   random(20,60),   random(20,60));
+    this.hatBandColor = color(random(150,255), random(50,150), random(50,100));
+    this.umbrellaAngle = 0;
   }
-
   update() {
-    this.bobOffset += 0.04;
-    this.legPhase += 0.06;
-    this.trunkWave += 0.03;
-    this.earFlap += 0.05;
+    this.bobOffset += 0.04; this.legPhase  += 0.06;
+    this.trunkWave += 0.03; this.earFlap   += 0.05;
     this.umbrellaAngle = sin(this.bobOffset * 0.7) * 0.08;
   }
-
   show() {
     push();
     translate(this.x, this.y + sin(this.bobOffset) * 4);
     scale(this.scale);
-
     let c = this.color;
-    let dark = color(red(c) - 30, green(c) - 30, blue(c) - 30);
-
-    // Shadow
-    noStroke();
-    fill(0, 0, 0, 40);
-    ellipse(0, 85, 120, 20);
-
-    // Legs
+    let dark = color(red(c)-30, green(c)-30, blue(c)-30);
+    noStroke(); fill(0,0,0,40); ellipse(0, 85, 120, 20);
     this.drawLegs(dark);
-
-    // Body
-    noStroke();
-    fill(c);
-    ellipse(0, 30, 110, 80);
-
-    // Ear
+    noStroke(); fill(c); ellipse(0, 30, 110, 80);
     fill(dark);
-    push();
-    translate(-50, 10);
-    rotate(sin(this.earFlap) * 0.1 - 0.1);
-    ellipse(-10, 0, 50, 60);
-    pop();
-
-    // Head
-    fill(c);
-    ellipse(45, -10, 70, 65);
-
-    // Trunk
+    push(); translate(-50,10); rotate(sin(this.earFlap)*0.1-0.1);
+    ellipse(-10, 0, 50, 60); pop();
+    fill(c); ellipse(45, -10, 70, 65);
     this.drawTrunk(dark);
-
-    // Eye
-    fill(255);
-    ellipse(62, -18, 14, 14);
-    fill(20);
-    ellipse(64, -17, 7, 7);
-    fill(255);
-    ellipse(66, -19, 3, 3);
-
-    // Top hat
+    fill(255); ellipse(62,-18,14,14);
+    fill(20);  ellipse(64,-17,7,7);
+    fill(255); ellipse(66,-19,3,3);
     this.drawTopHat();
-
-    // Umbrella
     this.drawUmbrella();
-
     pop();
   }
-
   drawLegs(dark) {
-    noStroke();
-    fill(dark);
-    let offsets = [-35, -12, 12, 35];
+    noStroke(); fill(dark);
+    let offsets = [-35,-12,12,35];
     for (let i = 0; i < 4; i++) {
-      let swing = (i % 2 === 0 ? 1 : -1) * sin(this.legPhase) * 6;
-      let lx = offsets[i];
-      rect(lx - 12, 55 + swing, 24, 40, 8);
-      // Foot
-      fill(color(red(dark) - 10, green(dark) - 10, blue(dark) - 10));
-      ellipse(lx, 96 + swing, 26, 14);
+      let sw = (i%2===0?1:-1)*sin(this.legPhase)*6;
+      rect(offsets[i]-12, 55+sw, 24, 40, 8);
+      fill(color(red(dark)-10, green(dark)-10, blue(dark)-10));
+      ellipse(offsets[i], 96+sw, 26, 14);
       fill(dark);
     }
   }
-
   drawTrunk(dark) {
-    noStroke();
-    fill(dark);
-    let wave = sin(this.trunkWave);
+    noStroke(); fill(dark);
+    let w = sin(this.trunkWave);
     beginShape();
-    vertex(72, 5);
-    bezierVertex(
-      95 + wave * 15, 20,
-      100 + wave * 20, 50,
-      85 + wave * 25, 70
-    );
-    bezierVertex(
-      80 + wave * 25, 75,
-      70 + wave * 22, 72,
-      68 + wave * 20, 65
-    );
-    bezierVertex(
-      80 + wave * 15, 45,
-      82 + wave * 10, 20,
-      62, 10
-    );
+    vertex(72,5);
+    bezierVertex(95+w*15,20,  100+w*20,50,  85+w*25,70);
+    bezierVertex(80+w*25,75,  70+w*22,72,   68+w*20,65);
+    bezierVertex(80+w*15,45,  82+w*10,20,   62,10);
     endShape(CLOSE);
-    // Trunk tip
-    fill(color(red(dark) - 15, green(dark) - 15, blue(dark) - 15));
-    ellipse(80 + wave * 25, 70, 18, 12);
+    fill(color(red(dark)-15, green(dark)-15, blue(dark)-15));
+    ellipse(80+w*25, 70, 18, 12);
   }
-
   drawTopHat() {
-    let hc = this.hatColor;
-    let band = this.hatBandColor;
-    // Hat brim
+    let hc = this.hatColor, band = this.hatBandColor;
     noStroke();
-    fill(hc);
-    ellipse(38, -40, 75, 15);
-    // Hat body
-    fill(hc);
-    rect(10, -85, 56, 46, 3);
-    // Hat band
-    fill(band);
-    rect(10, -52, 56, 10);
-    // Hat top highlight
-    fill(red(hc) + 20, green(hc) + 20, blue(hc) + 20, 80);
-    rect(12, -83, 52, 8, 2);
-    // Rain drops on hat
-    fill(150, 200, 255, 120);
-    for (let i = 0; i < 4; i++) {
-      ellipse(15 + i * 14, -44, 3, 5);
-    }
+    fill(hc); ellipse(38,-40,75,15);
+    fill(hc); rect(10,-85,56,46,3);
+    fill(band); rect(10,-52,56,10);
+    fill(red(hc)+20, green(hc)+20, blue(hc)+20, 80); rect(12,-83,52,8,2);
+    fill(150,200,255,120);
+    for (let i=0;i<4;i++) ellipse(15+i*14,-44,3,5);
   }
-
   drawUmbrella() {
-    push();
-    translate(10, -90);
-    rotate(this.umbrellaAngle - 0.2);
-
-    // Handle
-    stroke(80, 50, 30);
-    strokeWeight(3);
-    noFill();
-    beginShape();
-    vertex(0, 0);
-    vertex(0, 60);
-    bezierVertex(0, 70, -10, 75, -10, 80);
-    endShape();
-
-    // Canopy
+    push(); translate(10,-90); rotate(this.umbrellaAngle-0.2);
+    stroke(80,50,30); strokeWeight(3); noFill();
+    beginShape(); vertex(0,0); vertex(0,60); bezierVertex(0,70,-10,75,-10,80); endShape();
     noStroke();
-    // Panels alternating colors
-    let panelColors = [
-      color(200, 50, 50),
-      color(255, 255, 255),
-      color(200, 50, 50),
-      color(255, 255, 255),
-      color(200, 50, 50),
-      color(255, 255, 255),
-      color(200, 50, 50),
-      color(255, 255, 255),
-    ];
-    let r = 55;
-    let panels = panelColors.length;
-    for (let i = 0; i < panels; i++) {
+    let panelColors = [color(200,50,50),color(255,255,255),color(200,50,50),color(255,255,255),
+                       color(200,50,50),color(255,255,255),color(200,50,50),color(255,255,255)];
+    let r=55, panels=panelColors.length;
+    for (let i=0;i<panels;i++) {
       fill(panelColors[i]);
-      let a1 = map(i, 0, panels, PI, TWO_PI);
-      let a2 = map(i + 1, 0, panels, PI, TWO_PI);
-      beginShape();
-      vertex(0, 0);
-      for (let a = a1; a <= a2; a += 0.05) {
-        let ex = cos(a) * r;
-        let ey = sin(a) * r * 0.4;
-        vertex(ex, ey);
-      }
+      let a1=map(i,0,panels,PI,TWO_PI), a2=map(i+1,0,panels,PI,TWO_PI);
+      beginShape(); vertex(0,0);
+      for (let a=a1;a<=a2;a+=0.05) vertex(cos(a)*r, sin(a)*r*0.4);
       endShape(CLOSE);
     }
-    // Canopy edge scallops
-    stroke(150, 150, 150, 180);
-    strokeWeight(1.5);
-    noFill();
-    for (let i = 0; i < panels; i++) {
-      let a = map(i + 0.5, 0, panels, PI, TWO_PI);
-      let ex = cos(a) * r;
-      let ey = sin(a) * r * 0.4;
-      ellipse(ex, ey, 10, 6);
+    stroke(150,150,150,180); strokeWeight(1.5); noFill();
+    for (let i=0;i<panels;i++) {
+      let a=map(i+0.5,0,panels,PI,TWO_PI);
+      ellipse(cos(a)*r, sin(a)*r*0.4, 10, 6);
     }
-    // Tip
-    noStroke();
-    fill(80, 50, 30);
-    ellipse(0, -3, 8, 8);
-
+    noStroke(); fill(80,50,30); ellipse(0,-3,8,8);
     pop();
   }
 }
 
-function windowResized() {
-  resizeCanvas(windowWidth, windowHeight);
-}
+function windowResized() { resizeCanvas(windowWidth, windowHeight); }
 </script>
 </body>
 </html>
